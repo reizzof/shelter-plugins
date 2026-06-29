@@ -13,6 +13,7 @@ const {
 // Injected at runtime via shelter.ui.injectCss so class names stay literal
 // (a bare .css import gets treated as a CSS Module and our selectors miss).
 const CSS = `
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@600;700&display=swap");
 .mc-btn {
   background: var(--button-secondary-background, #4e5058);
   color: var(--text-normal, #dbdee1); border: none; border-radius: 4px;
@@ -41,11 +42,16 @@ const CSS = `
   -webkit-text-stroke: 0.1px currentColor;
 }
 .mc-popout-bar {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; justify-content: center;
   padding: 8px 12px; flex: 0 0 auto;
   background: var(--background-tertiary, #1e1f22);
 }
-.mc-popout-title { font-weight: 600; flex: 1 1 auto; }
+.mc-popout-title {
+  font-family: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  font-weight: 700; font-size: 16px; letter-spacing: 0.02em;
+  text-transform: lowercase;
+  color: var(--header-primary, #f2f3f5);
+}
 .mc-panes-popout {
   flex: 1 1 auto; min-height: 0;
   color: var(--text-normal, #dbdee1);
@@ -208,6 +214,23 @@ const CSS = `
   opacity: 0.85; min-width: 0;
 }
 .mc-reply-deleted { font-style: italic; }
+
+/* reaction pills under a message (Discord-style) */
+.mc-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.mc-reaction {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 8px; height: 25px; box-sizing: border-box; border-radius: 8px;
+  background: var(--background-secondary, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-faint, rgba(255, 255, 255, 0.06));
+}
+.mc-reaction-emoji {
+  width: 18px; height: 18px; object-fit: contain; display: block;
+  margin: 0 1px;
+}
+.mc-reaction-count {
+  font-size: 15px; font-weight: 600; line-height: 1;
+  color: var(--text-muted, #949ba4); min-width: 9px; text-align: center;
+}
 
 /* image lightbox modal */
 .mc-lightbox {
@@ -397,8 +420,16 @@ const {
   GuildMemberStore,
 } = storesFlat;
 
-// max messages kept per pane (older ones are dropped to bound memory/DOM)
-const MAX_MESSAGES = 100;
+// ---------------------------------------------------------------------------
+// tunable config (all timings in ms)
+// ---------------------------------------------------------------------------
+const MAX_MESSAGES = 100; // messages kept per pane (bounds memory/DOM)
+const SEED_FETCH_LIMIT = 50; // messages fetched when a channel isn't cached
+const GROUP_WINDOW_MS = 7 * 60 * 1000; // group consecutive msgs within this gap
+const SCROLLBAR_HIDE_MS = 900; // hide scrollbar this long after scrolling stops
+const FLASH_MS = 1600; // duration of the jump-to-message flash highlight
+const TOAST_MS = 2200; // how long the "Opened in Discord" toast shows
+const DEFAULT_VOLUME = 0.5; // initial video volume (persisted after first change)
 
 // resolve a member's display name + role color within a guild.
 // Important: the author object embedded in a message is a stale snapshot that
@@ -471,7 +502,7 @@ function saveChannels(arr) {
 }
 
 // persisted player volume (0..1), so videos don't blast at full volume each time
-store.videoVolume ??= 0.5;
+store.videoVolume ??= DEFAULT_VOLUME;
 // set up a <video> ref to use + remember the saved volume
 function setupVideoVolume(el) {
   if (!el) return;
@@ -516,6 +547,17 @@ function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+// unicode emoji -> Twemoji image URL (how Discord renders unicode emoji).
+// builds the dashed codepoint sequence Twemoji uses (drops VS16 ️).
+function twemojiUrl(str) {
+  const cps = [];
+  for (const ch of str) {
+    const cp = ch.codePointAt(0);
+    if (cp !== 0xfe0f) cps.push(cp.toString(16));
+  }
+  return `https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/svg/${cps.join("-")}.svg`;
 }
 
 // Discord embed footer style: "Today at 6:51 AM" / "Yesterday at ..." / date
@@ -1097,7 +1139,7 @@ function isContinuation(prev, cur) {
   if (!prev || !cur) return false;
   if (cur.reply) return false;
   if (prev.author?.id !== cur.author?.id) return false;
-  return cur.timestamp - prev.timestamp < 7 * 60 * 1000;
+  return cur.timestamp - prev.timestamp < GROUP_WINDOW_MS;
 }
 
 // is a message content only custom/unicode emoji (-> jumbo sizing)?
@@ -1144,6 +1186,23 @@ function extractReply(m) {
   return null;
 }
 
+// normalize reactions into { key, name, id, animated, count } pills.
+// `key` uniquely identifies an emoji (id for custom, name for unicode).
+function extractReactions(m) {
+  return (m.reactions ?? [])
+    .map((r) => {
+      const e = r.emoji ?? r;
+      return {
+        key: e.id || e.name,
+        name: e.name,
+        id: e.id ?? null,
+        animated: !!e.animated,
+        count: r.count ?? 1,
+      };
+    })
+    .filter((r) => r.count > 0);
+}
+
 // normalize a message (from store or REST) into our render shape.
 // keeps _raw so a later MESSAGE_UPDATE can re-derive media from merged raw.
 function normalize(m) {
@@ -1163,6 +1222,7 @@ function normalize(m) {
     timestamp: m.timestamp ? +new Date(m.timestamp) : Date.now(),
     media: collectMedia(m),
     reply: extractReply(m),
+    reactions: extractReactions(m),
     jumbo: isEmojiOnly(content),
     mentioned: mentionsMe(m),
     _raw: m,
@@ -1437,6 +1497,26 @@ function MessageRow(props) {
             </div>
           </Show>
           <MediaList media={m.media} guildId={guildId} onMediaLoad={props.onMediaLoad} />
+          <Show when={m.reactions.length}>
+            <div class="mc-reactions">
+              <For each={m.reactions}>
+                {(r) => (
+                  <span class="mc-reaction">
+                    <img
+                      class="mc-reaction-emoji"
+                      src={
+                        r.id
+                          ? `https://cdn.discordapp.com/emojis/${r.id}.${r.animated ? "gif" : "webp"}?size=32`
+                          : twemojiUrl(r.name)
+                      }
+                      alt={r.name}
+                    />
+                    <span class="mc-reaction-count">{r.count}</span>
+                  </span>
+                )}
+              </For>
+            </div>
+          </Show>
         </div>
       </div>
     </div>
@@ -1503,7 +1583,7 @@ function Pane(props) {
       clearTimeout(scrollHideTimer);
       scrollHideTimer = setTimeout(
         () => bodyRef?.classList.remove("mc-scrolling"),
-        900
+        SCROLLBAR_HIDE_MS
       );
     }
   }
@@ -1549,6 +1629,36 @@ function Pane(props) {
     if (pinned) queueMicrotask(scrollToBottom);
   }
 
+  // MESSAGE_REACTION_ADD/REMOVE: adjust the reaction pill counts live.
+  function reactMessage(messageId, emoji, delta) {
+    const key = emoji?.id || emoji?.name;
+    if (!key) return;
+    setMsgs((cur) => {
+      const i = cur.findIndex((m) => m.id === messageId);
+      if (i === -1) return cur;
+      const msg = cur[i];
+      const reactions = msg.reactions.slice();
+      const ri = reactions.findIndex((r) => r.key === key);
+      if (ri === -1) {
+        if (delta > 0)
+          reactions.push({
+            key,
+            name: emoji.name,
+            id: emoji.id ?? null,
+            animated: !!emoji.animated,
+            count: 1,
+          });
+      } else {
+        const count = reactions[ri].count + delta;
+        if (count <= 0) reactions.splice(ri, 1);
+        else reactions[ri] = { ...reactions[ri], count };
+      }
+      const next = cur.slice();
+      next[i] = { ...msg, reactions };
+      return next;
+    });
+  }
+
   // seed: prefer in-memory store, fall back to REST
   const seeded = MessageStore.getMessages(id);
   const arr = seeded?.toArray?.() ?? seeded?._array ?? [];
@@ -1557,7 +1667,9 @@ function Pane(props) {
   } else {
     // http functions are only safe after http.ready resolves
     http.ready
-      .then(() => http.get({ url: `/channels/${id}/messages?limit=50` }))
+      .then(() =>
+        http.get({ url: `/channels/${id}/messages?limit=${SEED_FETCH_LIMIT}` })
+      )
       .then((res) => {
         const body = res.body ?? res;
         if (Array.isArray(body)) pushMessages([...body].reverse());
@@ -1569,10 +1681,12 @@ function Pane(props) {
   queueMicrotask(scrollToBottom);
   setTimeout(scrollToBottom, 120); // catch late layout after first paint
 
-  // live: receive new + updated messages for this channel
+  // live: receive new + updated messages + reactions for this channel
   const unregister = register(id, {
     create: (m) => pushMessages([m]),
     update: (m) => updateMessage(m),
+    reactAdd: (d) => reactMessage(d.messageId ?? d.message_id, d.emoji, +1),
+    reactRemove: (d) => reactMessage(d.messageId ?? d.message_id, d.emoji, -1),
   });
   onCleanup(unregister);
 
@@ -1630,9 +1744,6 @@ function addChannel(id) {
   persistChannels([...channels(), id]);
   return true;
 }
-function addCurrentChannel() {
-  addChannel(SelectedChannelStore.getChannelId());
-}
 function removeChannel(id) {
   persistChannels(channels().filter((c) => c !== id));
 }
@@ -1666,7 +1777,7 @@ function jumpToFeedMessage(doc, messageId) {
   if (!el) return false;
   el.scrollIntoView({ behavior: "smooth", block: "center" });
   el.classList.add("mc-msg-flash");
-  setTimeout(() => el.classList.remove("mc-msg-flash"), 1600);
+  setTimeout(() => el.classList.remove("mc-msg-flash"), FLASH_MS);
   return true;
 }
 
@@ -1683,7 +1794,7 @@ function showToast(doc, text) {
   el.textContent = text;
   el.classList.add("mc-toast-show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("mc-toast-show"), 2200);
+  toastTimer = setTimeout(() => el.classList.remove("mc-toast-show"), TOAST_MS);
 }
 
 // is a discord link internal (a channel/message we'd navigate to)?
@@ -1768,10 +1879,7 @@ function PopoutContent(props) {
   return (
     <>
       <div class="mc-popout-bar">
-        <span class="mc-popout-title">DiscordFeed</span>
-        <button class="mc-btn" on:click={addCurrentChannel}>
-          + current channel
-        </button>
+        <span class="mc-popout-title">discordfeed</span>
       </div>
       {/* delegated click handler catches all data-mc-url / data-mc-channel
           links inside the panes (per-element on:click doesn't fire reliably
@@ -1785,7 +1893,8 @@ function PopoutContent(props) {
           when={channels().length}
           fallback={
             <div class="mc-empty">
-              Open a guild channel in Discord and click “+ current channel”.
+              Right-click a channel in Discord → “Add to Feed” to start
+              monitoring it here.
             </div>
           }
         >
@@ -2103,6 +2212,19 @@ export function onLoad() {
     scoped.flux.subscribe("MESSAGE_UPDATE", (payload) => {
       const m = payload.message;
       if (m) fanout(m.channel_id, "update", m);
+    });
+    // reactions (passive, from the gateway -- no fetching).
+    // skip the optimistic dispatch: Discord fires your own reaction twice
+    // (optimistic=true then the confirmed one) -> would double-count.
+    scoped.flux.subscribe("MESSAGE_REACTION_ADD", (d) => {
+      if (d?.optimistic) return;
+      const cid = d?.channelId ?? d?.channel_id;
+      if (cid) fanout(cid, "reactAdd", d);
+    });
+    scoped.flux.subscribe("MESSAGE_REACTION_REMOVE", (d) => {
+      if (d?.optimistic) return;
+      const cid = d?.channelId ?? d?.channel_id;
+      if (cid) fanout(cid, "reactRemove", d);
     });
 
     // remove any stray buttons left over from a previous build/hot-reload

@@ -8,8 +8,8 @@ A [shelter](https://shelter.uwu.network/) plugin (built for [Dorion](https://git
 
 - **Toolbar button** (next to the Inbox icon) opens the pop-out feed.
 - Monitor **multiple guild channels** side-by-side; **drag to reorder** panes.
-- **Add channels** two ways: a "+ current channel" button, or right-click a channel → **Add to Feed**.
-- Near-1:1 Discord rendering: gg sans font + theme, **embeds**, **GIFs/videos** (autoplay + playable), **masked links**, custom/jumbo **emoji**, **spoilers**, **replies**, message **grouping**, **role colors**, server **nicknames**, **mentions** + mention highlight, **code blocks**, **file attachments**, `-#` subtext / headers / quotes.
+- **Add channels** by right-clicking a channel in Discord → **Add to Feed**.
+- Near-1:1 Discord rendering: gg sans font + theme, **embeds**, **GIFs/videos** (autoplay + playable), **reactions** (live), **masked links**, custom/jumbo **emoji**, **spoilers**, **replies**, message **grouping**, **role colors**, server **nicknames**, **mentions** + mention highlight, **code blocks**, **file attachments**, `-#` subtext / headers / quotes.
 - Live updates (passive — no polling), per-pane **autoscroll** + "jump to present", **lightbox**, **right-click menu** (Copy Text/ID, Go to Message), **feed-first** message jump with Discord fallback.
 
 ## Install

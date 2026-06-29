@@ -1,6 +1,6 @@
 {
   "name": "Dorion DiscordFeed",
   "author": "reizzof",
-  "description": "Floating window that monitors multiple channels at once in read-only panes",
+  "description": "Pop-out window that monitors multiple guild channels at once in read-only panes (built for Dorion).",
   "hash": false
 }
