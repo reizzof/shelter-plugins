@@ -1,0 +1,14 @@
+{
+  "name": "shelter-discordfeed",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "lune dev plugins/discordfeed",
+    "build": "lune ci"
+  },
+  "devDependencies": {
+    "@uwu/lune": "latest",
+    "solid-js": "^1.8.0"
+  }
+}
