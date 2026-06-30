@@ -15,6 +15,7 @@ import {
   ReactiveRoot,
   render,
   log,
+  http,
   MessageStore,
   ChannelStore,
   AccessibilityStore,
