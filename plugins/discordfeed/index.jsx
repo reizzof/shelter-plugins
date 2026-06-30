@@ -418,7 +418,13 @@ const {
   GuildStore,
   GuildRoleStore,
   GuildMemberStore,
+  LocaleStore,
 } = storesFlat;
+
+// use Discord's own locale so the feed's time format (12h/24h) matches Discord
+function discordLocale() {
+  return LocaleStore?.locale || undefined;
+}
 
 // ---------------------------------------------------------------------------
 // tunable config (all timings in ms)
@@ -536,9 +542,12 @@ function avatarUrl(author) {
   return `https://cdn.discordapp.com/embed/avatars/${idx}.png`;
 }
 
+// time in Discord's locale (so 12h/24h matches Discord's setting)
 function fmtTime(ts) {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ts).toLocaleTimeString(discordLocale(), {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 // human file size: 402.00 KB / 1.20 MB
@@ -567,10 +576,10 @@ function fmtFooterTime(ts) {
   const sameDay = (a, b) => a.toDateString() === b.toDateString();
   const yest = new Date(now);
   yest.setDate(now.getDate() - 1);
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = fmtTime(ts);
   if (sameDay(d, now)) return `Today at ${time}`;
   if (sameDay(d, yest)) return `Yesterday at ${time}`;
-  return `${d.toLocaleDateString()} ${time}`;
+  return `${d.toLocaleDateString(discordLocale())} ${time}`;
 }
 
 // open a url in the user's real browser (safe; never auto-navigates Discord)

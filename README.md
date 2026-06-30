@@ -17,7 +17,7 @@ A [shelter](https://shelter.uwu.network/) plugin (built for [Dorion](https://git
 Add this URL as a plugin in shelter's plugin settings:
 
 ```
-https://reizzof.github.io/shelter-discordfeed/discordfeed
+https://reizzof.github.io/shelter-plugins/discordfeed
 ```
 
 *(replace `reizzof` with your GitHub username if you forked it)*
