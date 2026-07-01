@@ -1,0 +1,6 @@
+{
+  "name": "No Taskbar Flash",
+  "author": "reizzof",
+  "description": "Stops Dorion's taskbar flash, unread badge, and tray icon indicator for new notifications (built for Dorion; disables all of it, not just muted mentions).",
+  "hash": false
+}
