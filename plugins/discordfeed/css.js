@@ -8,7 +8,7 @@ export const CSS = `
    older Discord still works), then a hardcoded default. Our rules below use the
    --mc-* vars, so the popup follows whatever theme is active (incl. Onyx). */
 .mc-popout-root {
-  --mc-bg-primary: var(--background-base-low, var(--background-primary, #313338));
+  --mc-bg-primary: var(--background-gradient-chat, var(--background-base-lower, var(--background-primary, #313338)));
   --mc-bg-secondary: var(--background-surface-high, var(--background-secondary, #2b2d31));
   --mc-bg-secondary-alt: var(--background-surface-higher, var(--background-secondary-alt, #232428));
   --mc-bg-tertiary: var(--background-base-lower, var(--background-tertiary, #1e1f22));
@@ -107,6 +107,29 @@ export const CSS = `
 .mc-jump svg { width: 14px; height: 14px; }
 .mc-jump:hover { filter: brightness(1.15); }
 
+.mc-reply-composer {
+  flex: 0 0 auto; padding: 6px 12px 10px;
+  display: flex; flex-direction: column; gap: 4px;
+  background: var(--mc-bg-secondary-alt);
+}
+.mc-reply-composer-target {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 14px; color: var(--mc-text-muted); padding: 0 2px;
+}
+.mc-reply-composer-cancel {
+  cursor: pointer; font-size: 20px; line-height: 1; padding: 0 2px;
+}
+.mc-reply-composer-cancel:hover { color: var(--mc-text); }
+.mc-reply-composer-input {
+  box-sizing: border-box;
+  resize: none; border: none; border-radius: 8px; padding: 10px 12px;
+  background: var(--background-gradient-highest, var(--chat-background-default, var(--mc-bg-secondary-alt)));
+  color: var(--mc-text);
+  font-family: inherit; font-size: 14px; line-height: 1.3;
+  max-height: 120px; overflow-y: auto;
+}
+.mc-reply-composer-input:focus { outline: none; box-shadow: 0 0 0 1.5px var(--mc-accent); }
+
 /* thin Discord-style scrollbar; subtle when idle, brighter on pane hover */
 .mc-pane-body::-webkit-scrollbar { width: 8px; height: 8px; }
 .mc-pane-body::-webkit-scrollbar-track { background: transparent; }
@@ -141,6 +164,13 @@ export const CSS = `
 .mc-msg.mc-msg-mentioned {
   background: var(--background-mentioned, rgba(250, 166, 26, 0.08));
   box-shadow: inset 2px 0 0 0 var(--info-warning-foreground, #f0b232);
+}
+/* the message currently targeted by the reply composer (Discord's blue tint).
+   Comes after mc-msg-mentioned so it wins if a message is both mentioned AND
+   being replied to -- the active reply target should read as more prominent. */
+.mc-msg.mc-msg-replying {
+  background: var(--background-message-highlight, rgba(88, 101, 242, 0.1));
+  box-shadow: inset 2px 0 0 0 var(--mc-accent);
 }
 /* flash a feed message when a reply link jumps to it (Discord-style) */
 .mc-msg-flash { animation: mc-flash 1.6s ease; }
@@ -218,14 +248,14 @@ export const CSS = `
 
 /* reply preview (the small line above a reply) */
 .mc-reply {
-  display: flex; align-items: center; gap: 4px;
+  display: flex; align-items: center; gap: 4px; min-width: 0;
   font-size: 13px; color: var(--mc-text-muted);
   margin-left: 20px; margin-bottom: 2px; position: relative;
 }
 .mc-reply-spine {
   width: 28px; height: 10px; flex: 0 0 auto;
-  border-left: 2px solid var(--mc-bg-accent);
-  border-top: 2px solid var(--mc-bg-accent);
+  border-left: 2px solid var(--spine-default, var(--mc-bg-accent));
+  border-top: 2px solid var(--spine-default, var(--mc-bg-accent));
   border-top-left-radius: 6px; margin-top: 8px; align-self: flex-start;
 }
 .mc-reply-clickable { cursor: pointer; }
@@ -234,18 +264,41 @@ export const CSS = `
 .mc-reply-avatar { width: 16px; height: 16px; border-radius: 50%; flex: 0 0 auto; }
 .mc-reply-author { font-weight: 600; color: var(--mc-header); flex: 0 0 auto; }
 .mc-reply-text {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   opacity: 0.85; min-width: 0;
+}
+/* line-level markdown (headers, subtext, quotes) renders as its own block in
+   the full message body, but the reply preview is a single truncated line --
+   force these back to inline so they join the text flow instead of wrapping. */
+.mc-reply-text .mc-h1,
+.mc-reply-text .mc-h2,
+.mc-reply-text .mc-h3,
+.mc-reply-text .mc-subtext,
+.mc-reply-text .mc-quote {
+  display: inline; margin: 0; border: none; padding: 0; font-size: inherit;
 }
 .mc-reply-deleted { font-style: italic; }
 
 /* reaction pills under a message (Discord-style) */
 .mc-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .mc-reaction {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
   padding: 2px 8px; height: 25px; box-sizing: border-box; border-radius: 8px;
   background: var(--mc-bg-secondary);
   border: 1px solid var(--border-faint, rgba(255, 255, 255, 0.06));
+}
+.mc-reaction:hover { border-color: var(--mc-accent); }
+/* Discord-style pop on click (react or unreact) */
+.mc-reaction-pop { animation: mc-reaction-pop 0.25s ease; }
+@keyframes mc-reaction-pop {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+/* reactions the current user has already applied get Discord's blue tint */
+.mc-reaction-me {
+  background: var(--mc-mention-bg);
+  border-color: var(--mc-accent);
 }
 .mc-reaction-emoji {
   width: 18px; height: 18px; object-fit: contain; display: block;
@@ -255,6 +308,7 @@ export const CSS = `
   font-size: 15px; font-weight: 600; line-height: 1;
   color: var(--mc-text-muted); min-width: 9px; text-align: center;
 }
+.mc-reaction-me .mc-reaction-count { color: var(--mc-mention-fg); }
 
 /* image lightbox modal */
 .mc-lightbox {
@@ -313,7 +367,8 @@ export const CSS = `
 .mc-channel-mention { cursor: pointer; }
 .mc-channel-mention:hover { background: var(--mc-mention-bg-hover); }
 .mc-pill-chevron { opacity: 0.7; font-weight: 600; }
-.mc-role-mention { /* color/background set inline from role color */ }
+/* .mc-role-mention has no rule of its own: color/background come inline from
+   the role's color (see renderToken) */
 .mc-spoiler {
   background: var(--spoiler-hidden-background, #1e1f22);
   border-radius: 4px; padding: 0 2px; cursor: pointer;
@@ -373,6 +428,12 @@ export const CSS = `
   width: 160px; height: 160px; object-fit: contain;
   margin-top: 4px; display: block;
 }
+.mc-sticker-unsupported {
+  display: flex; align-items: center; justify-content: center;
+  text-align: center; padding: 12px; border-radius: 8px;
+  background: var(--mc-bg-secondary); color: var(--mc-text-muted);
+  font-size: 13px;
+}
 /* non-media attachment download card */
 .mc-file {
   display: flex; align-items: center; gap: 10px;
@@ -389,8 +450,6 @@ export const CSS = `
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .mc-file-size { color: var(--mc-text-muted); font-size: 12px; }
-/* video element used inside an embed card (FxTwitter etc.) */
-.mc-embed-image[src] { border-radius: 8px; }
 /* nudge the native player controls a touch closer to Discord's rounded look */
 .mc-media-video::-webkit-media-controls-panel,
 .mc-embed-image::-webkit-media-controls-panel {
@@ -412,7 +471,6 @@ export const CSS = `
 }
 .mc-embed-author-icon { width: 24px; height: 24px; border-radius: 50%; }
 .mc-embed-title { font-weight: 600; margin-top: 2px; color: var(--mc-link); }
-.mc-embed-title .mc-link { color: var(--mc-link); }
 .mc-embed-desc {
   font-size: 14px; color: var(--mc-text);
   white-space: pre-wrap; word-break: break-word; line-height: 1.375; margin-top: 4px;
@@ -423,7 +481,7 @@ export const CSS = `
 .mc-embed-field-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
 .mc-embed-field-value { font-size: 14px; color: var(--mc-text); white-space: pre-wrap; }
 .mc-embed-thumb { width: 80px; height: 80px; object-fit: cover; border-radius: 4px; flex: 0 0 auto; cursor: pointer; }
-.mc-embed-image { max-width: 100%; max-height: 300px; border-radius: 4px; cursor: pointer; display: block; margin-top: 8px; }
+.mc-embed-image { max-width: 100%; max-height: 300px; border-radius: 8px; cursor: pointer; display: block; margin-top: 8px; }
 .mc-embed-footer {
   display: flex; align-items: center; gap: 8px;
   font-size: 12px; color: var(--mc-text-muted); margin-top: 4px;
@@ -468,5 +526,130 @@ export const CSS = `
 }
 .mc-toolbar-btn:hover .mc-tooltip {
   opacity: 1;
+}
+
+/* profile settings panel (also main document -- real Discord vars, no --mc-*).
+   user-select:none + cursor:default on the row so it reads as UI, not
+   selectable text; the name/buttons/inputs opt back into pointer/text where
+   they're actually interactive. */
+/* space out Shelter's SwitchItem rows (its own components, so we reach them as
+   our container's direct children) and slightly shrink their note text. Scoped
+   under .mc-settings so nothing outside our panel is touched. */
+.mc-settings > div:not(.mc-profile-header):not(.mc-profile-settings) + div:not(.mc-profile-header):not(.mc-profile-settings) {
+  margin-top: 12px;
+}
+/* the "Note: …" warning line lives INSIDE the Hide-title switch's note (so no
+   row divider falls between it and the first line). It renders smaller than the
+   normal-size first line, with a gap above it for a plain break. */
+.mc-hide-title-warning {
+  margin-top: 8px;
+  font-size: 12px; line-height: 1.4;
+}
+.mc-profile-header { margin-top: 20px; }
+.mc-profile-settings {
+  margin-top: 8px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;
+  user-select: none; cursor: default;
+}
+.mc-profile-list {
+  display: flex; flex-direction: column;
+  background: var(--background-surface-high, var(--background-secondary, rgba(255, 255, 255, 0.02)));
+  border: 1px solid var(--border-faint, rgba(255, 255, 255, 0.06));
+  border-radius: 8px; overflow: hidden;
+  /* caps how tall the list can grow before scrolling internally -- exactly 5
+     rows (each row: 20px content + 14px*2 padding + 1px border = 49px) */
+  max-height: 245px; overflow-y: auto;
+}
+.mc-profile-list::-webkit-scrollbar { width: 8px; }
+.mc-profile-list::-webkit-scrollbar-track { background: transparent; }
+.mc-profile-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-auto-thumb, #1a1b1e);
+  border-radius: 4px; border: 2px solid transparent; background-clip: padding-box;
+}
+.mc-profile-list::-webkit-scrollbar-corner { background: transparent; }
+.mc-profile-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 12px; height: 20px; box-sizing: content-box;
+  border-bottom: 1px solid var(--border-faint, rgba(255, 255, 255, 0.06));
+  color: var(--text-default, #f2f3f5);
+  font-size: 15px;
+}
+.mc-profile-list > .mc-profile-row:last-child { border-bottom: none; }
+.mc-profile-row:hover { background: var(--background-modifier-hover, rgba(255,255,255,0.04)); }
+.mc-profile-name {
+  cursor: pointer; flex: 1 1 auto; min-width: 0;
+}
+/* kill the browser's native contenteditable focus ring outright -- target
+   :focus/:focus-visible directly with !important since some engines apply
+   their default outline in a way plain outline:none doesn't fully suppress
+   on contenteditable elements. */
+.mc-profile-name:focus,
+.mc-profile-name:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.mc-profile-name-editing {
+  cursor: text; user-select: text;
+}
+.mc-profile-delete {
+  cursor: pointer; flex: 0 0 auto; font-size: 18px; line-height: 1;
+  color: var(--text-danger, #f23f43); padding: 4px 8px; border-radius: 4px;
+  background: rgba(242, 63, 67, 0.12);
+}
+.mc-profile-delete:hover { background: rgba(242, 63, 67, 0.22); }
+/* TextBox ships its own input chrome (bg/border) that reads as a permanent
+   "selected" highlight -- flatten it so only the real focus ring shows. */
+.mc-profile-add input {
+  background: transparent !important;
+  border: 1px solid var(--border-faint, rgba(255, 255, 255, 0.06)) !important;
+  font-size: 15px !important;
+}
+/* align-items: stretch grows the Create button (not shrink the input) to match
+   the input's own natural height -- shrinking the input risks clipping its
+   internal padding */
+.mc-profile-add { display: flex; align-items: stretch; gap: 8px; margin-top: 4px; }
+.mc-profile-add > *:first-child { flex: 1 1 auto; min-width: 0; user-select: text; cursor: text; }
+.mc-profile-add > button { flex: 0 0 auto; height: auto; }
+
+/* right-click quick-launch menu on the toolbar button (raw DOM, main document) */
+.mc-profile-menu {
+  position: fixed; z-index: 10001; min-width: 160px;
+  background: var(--background-surface-highest, var(--background-floating, #1e1f22));
+  border-radius: 8px; padding: 6px; box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24);
+  font-family: "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  /* caps how tall the dropdown can grow before scrolling internally */
+  max-height: 340px; overflow-y: auto;
+}
+.mc-profile-menu::-webkit-scrollbar { width: 8px; }
+.mc-profile-menu::-webkit-scrollbar-track { background: transparent; }
+.mc-profile-menu::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-auto-thumb, #1a1b1e);
+  border-radius: 4px; border: 2px solid transparent; background-clip: padding-box;
+}
+.mc-profile-menu::-webkit-scrollbar-corner { background: transparent; }
+.mc-profile-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 4px; cursor: pointer;
+  color: var(--text-default, #f2f3f5); font-size: 14px;
+  white-space: nowrap;
+}
+.mc-profile-menu-item:hover { background: var(--background-modifier-hover, rgba(255,255,255,0.06)); }
+.mc-profile-menu-empty {
+  padding: 8px 10px; font-size: 13px; color: var(--text-muted, #949ba4);
+  font-family: "gg sans", "Noto Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  white-space: nowrap;
+}
+
+/* "Add to Profile" flyout's empty state -- cloned from a real (clickable)
+   Discord menu item, so mute its interactive affordances since there's
+   nothing to click here. */
+.mc-profile-submenu-empty {
+  cursor: default !important; pointer-events: none;
+  opacity: 0.6; white-space: nowrap;
+}
+/* checkmark for a profile the channel already belongs to -- trails the row
+   (margin-left: auto pushes it to the far end, not prefixed on the label) */
+.mc-profile-submenu-check {
+  margin-left: auto; padding-left: 12px;
+  color: var(--text-positive, #23a55a); font-weight: 700;
 }
 `;

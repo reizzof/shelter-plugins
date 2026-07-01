@@ -3,6 +3,7 @@
 import { createSignal } from "solid-js";
 import {
   store,
+  log,
   MessageStore,
   ChannelStore,
   UserStore,
@@ -81,28 +82,165 @@ function resolveChannelRef(channelId) {
 }
 
 // ---------------------------------------------------------------------------
-// persisted state: the list of channel IDs we're monitoring.
-// We persist a JSON STRING (a primitive) rather than an array, because
-// shelter's plugin store is a Solid proxy and storing/spreading a nested
-// array proxy triggers "Please use proxy object" errors. A string is safe.
+// persisted state: named "profiles", each a list of channel IDs to monitor
+// in the Shared Feed. { [name]: string[] }. Everything persists as a JSON
+// STRING (a primitive), not a nested object/array, because shelter's plugin
+// store is a Solid proxy and storing/spreading a nested proxy triggers
+// "Please use proxy object" errors.
+//
+// Migration: older installs only ever had store.channelsJson (a flat
+// array). On first load with the new format missing, wrap that array into
+// a single "Default" profile so nobody's existing list disappears.
 // ---------------------------------------------------------------------------
-store.channelsJson ??= "[]";
-
-export function loadChannels() {
+// Profiles are named, PERSISTENT channel lists. Each is opened on demand into
+// its own feed window (multiple can be open at once). There is no "active"
+// profile -- the Shared Feed is a separate, transient (in-memory only) list
+// that lives in components.jsx and isn't persisted here.
+//
+// keeps names short enough to never wrap/crowd the toolbar flyout, the "Add
+// to Profile" submenu, or the settings rows.
+export const PROFILE_NAME_MAX_LENGTH = 20;
+//
+// profile display order is tracked SEPARATELY from the profiles map, because
+// JS object key order isn't stable under rename (delete+re-add moves a key
+// to the end) -- this keeps "created first" ordering regardless of renames.
+store.profilesJson ??= (() => {
+  // one-time migration: older installs kept a single flat channel list in
+  // channelsJson -- fold it into a "Default" profile so it isn't lost.
   try {
-    const v = JSON.parse(store.channelsJson);
+    const legacy = JSON.parse(store.channelsJson ?? "[]");
+    if (Array.isArray(legacy) && legacy.length) {
+      return JSON.stringify({ Default: legacy });
+    }
+  } catch {}
+  return JSON.stringify({});
+})();
+store.profileOrderJson ??= (() => {
+  try {
+    return JSON.stringify(Object.keys(JSON.parse(store.profilesJson)));
+  } catch {
+    return JSON.stringify([]);
+  }
+})();
+
+function loadProfiles() {
+  try {
+    const v = JSON.parse(store.profilesJson);
+    if (v && typeof v === "object" && !Array.isArray(v)) return v;
+    log(["discordfeed: profilesJson was valid JSON but not an object -- refusing to treat as empty", store.profilesJson], "warn");
+  } catch (e) {
+    log(["discordfeed: profilesJson failed to parse -- refusing to treat as empty (data NOT wiped)", store.profilesJson, e], "warn");
+  }
+  // IMPORTANT: never return {} here. A caller that reads {} and then saves
+  // (e.g. addChannelToProfile) would permanently overwrite real data with
+  // an empty object on what might just be a transient read glitch. Throwing
+  // instead means a broken read surfaces as an error, not silent data loss.
+  throw new Error("discordfeed: could not read profiles from storage");
+}
+
+function saveProfiles(profiles) {
+  store.profilesJson = JSON.stringify(profiles);
+}
+
+function loadOrder() {
+  try {
+    const v = JSON.parse(store.profileOrderJson);
     return Array.isArray(v) ? v : [];
   } catch {
     return [];
   }
 }
 
-export function saveChannels(arr) {
-  store.channelsJson = JSON.stringify(arr);
+function saveOrder(order) {
+  store.profileOrderJson = JSON.stringify(order);
+}
+
+export function listProfiles() {
+  let profiles;
+  try {
+    profiles = loadProfiles();
+  } catch {
+    // surfaced (loadProfiles already logged) -- show an empty list rather
+    // than crash the settings panel, but do NOT touch storage (no save).
+    return [];
+  }
+  const order = loadOrder();
+  // names in the map but missing from order (e.g. pre-order-tracking
+  // installs) are appended once, in whatever order Object.keys gives --
+  // self-healing without losing anything
+  const known = new Set(order);
+  const healed = [...order.filter((n) => n in profiles), ...Object.keys(profiles).filter((n) => !known.has(n))];
+  if (healed.length !== order.length || healed.some((n, i) => n !== order[i])) saveOrder(healed);
+  return healed;
+}
+
+// channels belonging to a specific profile (empty array if unknown)
+export function getProfileChannels(name) {
+  const arr = loadProfiles()[name];
+  return Array.isArray(arr) ? arr : [];
+}
+
+export function isChannelInProfile(name, id) {
+  return getProfileChannels(name).includes(id);
+}
+
+export function addChannelToProfile(name, id) {
+  const profiles = loadProfiles();
+  if (!(name in profiles) || !id) return false;
+  if (profiles[name].includes(id)) return false;
+  profiles[name] = [...profiles[name], id];
+  saveProfiles(profiles);
+  return true;
+}
+
+export function removeChannelFromProfile(name, id) {
+  const profiles = loadProfiles();
+  if (!(name in profiles)) return false;
+  if (!profiles[name].includes(id)) return false;
+  profiles[name] = profiles[name].filter((c) => c !== id);
+  saveProfiles(profiles);
+  return true;
+}
+
+export function createProfile(name) {
+  const trimmed = name.trim().slice(0, PROFILE_NAME_MAX_LENGTH);
+  if (!trimmed) return false;
+  const profiles = loadProfiles();
+  if (trimmed in profiles) return false;
+  profiles[trimmed] = [];
+  saveProfiles(profiles);
+  saveOrder([...loadOrder(), trimmed]);
+  return true;
+}
+
+export function renameProfile(oldName, newName) {
+  const trimmed = newName.trim().slice(0, PROFILE_NAME_MAX_LENGTH);
+  if (!trimmed || oldName === trimmed) return false;
+  const profiles = loadProfiles();
+  if (!(oldName in profiles) || trimmed in profiles) return false;
+  profiles[trimmed] = profiles[oldName];
+  delete profiles[oldName];
+  saveProfiles(profiles);
+  // swap the name in place so its position in the order is preserved
+  saveOrder(loadOrder().map((n) => (n === oldName ? trimmed : n)));
+  return true;
+}
+
+export function deleteProfile(name) {
+  const profiles = loadProfiles();
+  if (!(name in profiles)) return false;
+  delete profiles[name];
+  saveProfiles(profiles);
+  saveOrder(loadOrder().filter((n) => n !== name));
+  return true;
 }
 
 // hide the "discordfeed" title header bar in popout windows (user setting)
 store.hideTitle ??= false;
+
+// show an always-visible message composer under every pane (not just when
+// replying to a specific message via right-click)
+store.showComposer ??= false;
 
 // persisted player volume (0..1), so videos don't blast at full volume each time
 store.videoVolume ??= DEFAULT_VOLUME;
@@ -495,14 +633,22 @@ function collectMedia(m) {
   }
   // stickers are their own message field (not attachments/embeds).
   // format_type: 1=PNG, 2=APNG, 3=Lottie (JSON), 4=GIF.
+  // cdn.discordapp.com/stickers/* is dead (404s -- Discord broke it, see
+  // discord/discord-api-docs#6457); discord.com/stickers/* is the current
+  // working host. GIF-format stickers specifically only ever worked via
+  // media.discordapp.net (never had a cdn.discordapp.com path at all, see
+  // discord-api-docs#6675). APNG (2) plays natively in an <img>; Lottie (3)
+  // is vector JSON with no raster form, so it falls back to a static .png
+  // still (no Lottie player dependency).
   for (const s of m.stickerItems ?? m.sticker_items ?? m.stickers ?? []) {
     const fmt = s.format_type ?? s.formatType ?? 1;
-    // Lottie stickers are vector JSON; the CDN serves a .png still for them too.
-    // PNG/APNG/GIF -> media.discordapp.net serves an animated/static .png.
-    const ext = fmt === 4 ? "gif" : "png";
+    const url =
+      fmt === 4
+        ? `https://media.discordapp.net/stickers/${s.id}.gif`
+        : `https://discord.com/stickers/${s.id}.png`;
     media.push({
       type: "sticker",
-      url: `https://media.discordapp.net/stickers/${s.id}.${ext}?size=160`,
+      url,
       name: s.name ?? "sticker",
     });
   }
@@ -650,6 +796,7 @@ function extractReactions(m) {
         id: e.id ?? null,
         animated: !!e.animated,
         count: r.count ?? 1,
+        me: !!r.me,
       };
     })
     .filter((r) => r.count > 0);

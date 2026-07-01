@@ -19,6 +19,7 @@ import {
   MessageStore,
   ChannelStore,
   AccessibilityStore,
+  UserStore,
 } from "./shelter.js";
 import { CSS } from "./css.js";
 import {
@@ -41,8 +42,13 @@ import {
   renderContent,
   isContinuation,
   normalize,
-  loadChannels,
-  saveChannels,
+  listProfiles,
+  createProfile,
+  renameProfile,
+  deleteProfile,
+  getProfileChannels,
+  addChannelToProfile,
+  removeChannelFromProfile,
 } from "./helpers.jsx";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +97,63 @@ function Lightbox(props) {
 const [ctxMenu, setCtxMenu] = createSignal(null);
 function closeCtxMenu() {
   setCtxMenu(null);
+}
+
+// ---------------------------------------------------------------------------
+// reply composer: one in-flight reply target per channel (Map so each pane
+// tracks its own independently). { channelId: { msg, guildId } }
+// ---------------------------------------------------------------------------
+const [replyTargets, setReplyTargets] = createSignal({});
+function startReply(channelId, msg, guildId) {
+  setReplyTargets((cur) => ({ ...cur, [channelId]: { msg, guildId } }));
+}
+function cancelReply(channelId) {
+  setReplyTargets((cur) => {
+    const next = { ...cur };
+    delete next[channelId];
+    return next;
+  });
+}
+
+async function sendReply(channelId, content) {
+  const trimmed = content.trim();
+  if (!trimmed) return;
+  const target = replyTargets()[channelId];
+  const body = {
+    content: trimmed,
+    ...(target && {
+      message_reference: {
+        message_id: target.msg.id,
+        channel_id: channelId,
+        guild_id: target.guildId,
+      },
+    }),
+  };
+  cancelReply(channelId);
+  await http.ready;
+  await http.post({ url: `/channels/${channelId}/messages`, body });
+}
+
+// toggle the current user's own reaction on an existing emoji pill (never
+// adds a brand new emoji -- only reacts where one is already present).
+// Updates local state immediately (the real gateway echo would otherwise
+// take a beat, making the click feel unresponsive), then rolls back if the
+// REST call fails. Discord's REST emoji path segment: custom = "name:id",
+// unicode = the raw emoji character, URI-encoded.
+async function toggleReaction(channelId, messageId, emoji, isActive, onReact) {
+  const delta = isActive ? -1 : 1;
+  onReact(messageId, emoji, delta, true, "local");
+  const encoded = emoji.id
+    ? encodeURIComponent(`${emoji.name}:${emoji.id}`)
+    : encodeURIComponent(emoji.name);
+  const url = `/channels/${channelId}/messages/${messageId}/reactions/${encoded}/@me`;
+  try {
+    await http.ready;
+    if (isActive) await http.del({ url });
+    else await http.put({ url });
+  } catch {
+    onReact(messageId, emoji, -delta, !isActive, "rollback"); // undo on failure
+  }
 }
 
 // copy text reliably. The async clipboard API throws "Document is not focused"
@@ -212,6 +275,14 @@ function ContextMenu(props) {
         on:contextmenu={(e) => e.preventDefault()}
       >
         <Item
+          onClick={() =>
+            startReply(ctxMenu().channelId, ctxMenu().msg, ctxMenu().guildId)
+          }
+        >
+          Reply
+        </Item>
+        <div class="mc-ctx-sep" />
+        <Item
           onClick={() => {
             showToast(w.document, "Opened in Discord ↗");
             navigateToChannel(
@@ -235,6 +306,34 @@ function ContextMenu(props) {
         <div class="mc-ctx-sep" />
         <Item onClick={() => copyText(ctxMenu().msg.id, w.document)}>Copy Message ID</Item>
       </div>
+    </Show>
+  );
+}
+
+// Discord's sticker CDN is unreliable, particularly for animated formats
+// (APNG/Lottie/GIF stickers routinely 404 across every known host -- a
+// known, unresolved issue on Discord's own end, not something we can fix).
+// Fall back to a placeholder instead of a broken image icon.
+function StickerMedia(props) {
+  const [failed, setFailed] = createSignal(false);
+  return (
+    <Show
+      when={!failed()}
+      fallback={
+        <div class="mc-sticker mc-sticker-unsupported" title={props.media.name}>
+          Unsupported media type
+        </div>
+      }
+    >
+      <img
+        class="mc-sticker"
+        src={props.media.url}
+        alt={props.media.name}
+        title={props.media.name}
+        loading="lazy"
+        onLoad={props.onMediaLoad}
+        onError={() => setFailed(true)}
+      />
     </Show>
   );
 }
@@ -293,15 +392,7 @@ function MediaList(props) {
             onLoadedData={onMediaLoad}
           />
         ) : md.type === "sticker" ? (
-          // sticker -> fixed-size image, not zoomable (matches Discord)
-          <img
-            class="mc-sticker"
-            src={md.url}
-            alt={md.name}
-            title={md.name}
-            loading="lazy"
-            onLoad={onMediaLoad}
-          />
+          <StickerMedia media={md} onMediaLoad={onMediaLoad} />
         ) : md.type === "image" ? (
           <img
             class="mc-media-img"
@@ -483,9 +574,9 @@ function MessageRow(props) {
       data-mc-msgid={m.id}
       classList={{
         "mc-msg-grouped": props.grouped,
-        "mc-msg-reply": !!m.reply,
         "mc-msg-active": ctxMenu()?.msg?.id === m.id,
         "mc-msg-mentioned": m.mentioned,
+        "mc-msg-replying": replyTargets()[props.channelId]?.msg.id === m.id,
       }}
       on:contextmenu={onContextMenu}
     >
@@ -524,7 +615,24 @@ function MessageRow(props) {
             <div class="mc-reactions">
               <For each={m.reactions}>
                 {(r) => (
-                  <span class="mc-reaction">
+                  <span
+                    class="mc-reaction"
+                    classList={{ "mc-reaction-me": r.me }}
+                    on:click={(e) => {
+                      e.stopPropagation();
+                      const el = e.currentTarget;
+                      el.classList.remove("mc-reaction-pop");
+                      void el.offsetWidth; // restart the animation on repeat clicks
+                      el.classList.add("mc-reaction-pop");
+                      toggleReaction(
+                        props.channelId,
+                        m.id,
+                        { name: r.name, id: r.id },
+                        r.me,
+                        props.onReact
+                      );
+                    }}
+                  >
                     <img
                       class="mc-reaction-emoji"
                       src={
@@ -543,6 +651,78 @@ function MessageRow(props) {
         </div>
       </div>
     </div>
+  );
+}
+
+// composer shown at the bottom of a pane whenever replying to a specific
+// message (right-click -> Reply), or always if the user enabled the
+// "Show message composer" setting -- in which case it doubles as a plain
+// send box, with the reply-target header shown only while one is active.
+function ReplyComposer(props) {
+  const channelId = props.channelId;
+  const target = () => replyTargets()[channelId];
+  const visible = () => !!target() || store.showComposer;
+  const member = () =>
+    resolveMember(target()?.guildId, target()?.msg.author, target()?.msg.webhook);
+
+  let inputRef;
+  createEffect(() => {
+    if (target() && inputRef) {
+      inputRef.focus();
+      autoGrow();
+    }
+  });
+
+  // grow/shrink the textarea to fit its content, up to the CSS max-height
+  // (which then takes over and scrolls internally). Reset to "auto" first
+  // and force a synchronous reflow read (offsetHeight) so scrollHeight
+  // reflects the SHRUNK size when text is deleted, not the previous height.
+  function autoGrow() {
+    if (!inputRef) return;
+    inputRef.style.height = "auto";
+    void inputRef.offsetHeight;
+    inputRef.style.height = `${inputRef.scrollHeight}px`;
+  }
+
+  function send() {
+    const content = inputRef?.value ?? "";
+    inputRef.value = "";
+    autoGrow();
+    sendReply(channelId, content);
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    } else if (e.key === "Escape") {
+      cancelReply(channelId);
+    }
+  }
+
+  return (
+    <Show when={visible()}>
+      <div class="mc-reply-composer">
+        <Show when={target()}>
+          <div class="mc-reply-composer-target">
+            <span>
+              Replying to <span style={member().color ? `color:${member().color}` : undefined}>@{member().name}</span>
+            </span>
+            <span class="mc-reply-composer-cancel" on:click={() => cancelReply(channelId)}>
+              ×
+            </span>
+          </div>
+        </Show>
+        <textarea
+          class="mc-reply-composer-input"
+          ref={inputRef}
+          placeholder={target() ? "Reply…" : "Message…"}
+          rows="1"
+          on:keydown={onKeyDown}
+          on:input={autoGrow}
+        />
+      </div>
+    </Show>
   );
 }
 
@@ -591,9 +771,13 @@ function Pane(props) {
     },
   };
   paneScrollRestores.add(scrollHandle);
-  onCleanup(() => paneScrollRestores.delete(scrollHandle));
 
   let scrollHideTimer = null;
+  onCleanup(() => {
+    paneScrollRestores.delete(scrollHandle);
+    clearTimeout(scrollHideTimer); // pane closed mid-scroll -> don't leave it pending
+  });
+
   function onScroll() {
     // user-driven scroll position decides whether we keep following
     pinned = atBottom();
@@ -611,15 +795,16 @@ function Pane(props) {
     }
   }
 
-  function pushMessages(list, { prepend = false } = {}) {
+  function pushMessages(list) {
     setMsgs((cur) => {
       let next = cur.slice();
       const idxById = new Map(next.map((m, i) => [m.id, i]));
       // dedup by nonce too: Discord sends an optimistic local message then the
       // confirmed server message (different ids, same nonce) -> would dupe.
-      const idxByNonce = new Map(
-        next.filter((m) => m._raw?.nonce).map((m, i) => [m._raw.nonce, i])
-      );
+      const idxByNonce = new Map();
+      next.forEach((m, i) => {
+        if (m._raw?.nonce != null) idxByNonce.set(m._raw.nonce, i);
+      });
       for (const raw of list) {
         const norm = normalize(raw);
         if (idxById.has(norm.id)) continue; // already have this exact message
@@ -629,14 +814,13 @@ function Pane(props) {
           next[idxByNonce.get(nonce)] = norm;
           continue;
         }
-        if (prepend) next.unshift(norm);
-        else next.push(norm);
+        next.push(norm);
       }
       // cap retained messages to bound memory/DOM
       if (next.length > MAX_MESSAGES) next = next.slice(next.length - MAX_MESSAGES);
       return next;
     });
-    if (pinned && !prepend) queueMicrotask(scrollToBottom);
+    if (pinned) queueMicrotask(scrollToBottom);
   }
 
   // MESSAGE_UPDATE: Discord adds link-preview embeds / edits a moment after
@@ -652,10 +836,37 @@ function Pane(props) {
     if (pinned) queueMicrotask(scrollToBottom);
   }
 
-  // MESSAGE_REACTION_ADD/REMOVE: adjust the reaction pill counts live.
-  function reactMessage(messageId, emoji, delta) {
+  // toggleReaction() applies our own click optimistically (isMe, local=true)
+  // so the pill responds instantly; the real gateway echo for that same
+  // action arrives a moment later also tagged isMe. Track pending optimistic
+  // deltas per (messageId, key) so that echo is consumed as confirmation
+  // instead of being applied a second time (which would double-count).
+  const pendingReacts = new Map(); // `${messageId}:${key}` -> count of un-echoed local deltas
+
+  // MESSAGE_REACTION_ADD/REMOVE: adjust the reaction pill counts, and track
+  // whether the CURRENT user is the one who (un)reacted so the pill can
+  // render as active/toggleable. `mode: "local"` = our own optimistic update
+  // (from toggleReaction, before the server confirms); "rollback" = undo a
+  // local update after the REST call failed (applied directly, doesn't wait
+  // for/consume an echo since none will arrive); omitted = a real dispatch
+  // (someone else's reaction, or our own action's gateway echo).
+  function reactMessage(messageId, emoji, delta, isMe, mode) {
     const key = emoji?.id || emoji?.name;
     if (!key) return;
+    const pendingKey = `${messageId}:${key}`;
+    if (mode === "local") {
+      pendingReacts.set(pendingKey, (pendingReacts.get(pendingKey) ?? 0) + 1);
+    } else if (mode === "rollback") {
+      const n = (pendingReacts.get(pendingKey) ?? 0) - 1;
+      if (n <= 0) pendingReacts.delete(pendingKey);
+      else pendingReacts.set(pendingKey, n);
+    } else if (isMe && pendingReacts.get(pendingKey) > 0) {
+      // this is the echo of our own optimistic update -- already applied
+      const n = pendingReacts.get(pendingKey) - 1;
+      if (n <= 0) pendingReacts.delete(pendingKey);
+      else pendingReacts.set(pendingKey, n);
+      return;
+    }
     setMsgs((cur) => {
       const i = cur.findIndex((m) => m.id === messageId);
       if (i === -1) return cur;
@@ -670,11 +881,17 @@ function Pane(props) {
             id: emoji.id ?? null,
             animated: !!emoji.animated,
             count: 1,
+            me: isMe,
           });
       } else {
         const count = reactions[ri].count + delta;
         if (count <= 0) reactions.splice(ri, 1);
-        else reactions[ri] = { ...reactions[ri], count };
+        else
+          reactions[ri] = {
+            ...reactions[ri],
+            count,
+            me: isMe ? delta > 0 : reactions[ri].me,
+          };
       }
       const next = cur.slice();
       next[i] = { ...msg, reactions };
@@ -702,14 +919,27 @@ function Pane(props) {
 
   // after the initial seed renders, force-scroll to the newest message
   queueMicrotask(scrollToBottom);
-  setTimeout(scrollToBottom, 120); // catch late layout after first paint
+  const seedScrollTimer = setTimeout(scrollToBottom, 120); // catch late layout after first paint
+  onCleanup(() => clearTimeout(seedScrollTimer));
 
   // live: receive new + updated messages + reactions for this channel
   const unregister = register(id, {
     create: (m) => pushMessages([m]),
     update: (m) => updateMessage(m),
-    reactAdd: (d) => reactMessage(d.messageId ?? d.message_id, d.emoji, +1),
-    reactRemove: (d) => reactMessage(d.messageId ?? d.message_id, d.emoji, -1),
+    reactAdd: (d) =>
+      reactMessage(
+        d.messageId ?? d.message_id,
+        d.emoji,
+        +1,
+        (d.userId ?? d.user_id) === UserStore.getCurrentUser()?.id
+      ),
+    reactRemove: (d) =>
+      reactMessage(
+        d.messageId ?? d.message_id,
+        d.emoji,
+        -1,
+        (d.userId ?? d.user_id) === UserStore.getCurrentUser()?.id
+      ),
   });
   onCleanup(unregister);
 
@@ -739,6 +969,7 @@ function Pane(props) {
                   channelId={id}
                   grouped={isContinuation(msgs()[i() - 1], m)}
                   onMediaLoad={() => pinned && scrollToBottom()}
+                  onReact={reactMessage}
                 />
               )}
             </For>
@@ -753,35 +984,97 @@ function Pane(props) {
           </div>
         </Show>
       </div>
+      <ReplyComposer channelId={id} />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// channel list state (module level so toolbar button + popout share it)
+// SHARED FEED state: a transient, in-memory-only channel list (NOT persisted).
+// Right-click "Add to Shared Feed" appends; reorderable; gone on restart.
 // ---------------------------------------------------------------------------
-const [channels, setChannels] = createSignal(loadChannels());
-
-function persistChannels(next) {
-  saveChannels(next);
-  setChannels(next);
-}
+const [channels, setChannels] = createSignal([]);
 export function addChannel(id) {
   if (!id || channels().includes(id)) return false;
-  persistChannels([...channels(), id]);
+  setChannels([...channels(), id]);
   return true;
 }
 export function removeChannel(id) {
-  persistChannels(channels().filter((c) => c !== id));
+  setChannels(channels().filter((c) => c !== id));
 }
 export function hasChannel(id) {
   return channels().includes(id);
 }
+
+// ---------------------------------------------------------------------------
+// PROFILE state: named, PERSISTENT lists. `profiles` is the ordered list of
+// profile NAMES (drives settings + toolbar menu). Per-profile channel lists
+// are backed by storage but mirrored into reactive signals so any OPEN profile
+// feed window updates live when a channel is added (from Discord's menu) or
+// removed (from the pane's × button).
+// ---------------------------------------------------------------------------
+export const [profiles, setProfiles] = createSignal(listProfiles());
+
+// name -> [channelsSignal, setChannelsSignal]; created lazily on first open.
+const profileChannelSignals = new Map();
+function profileChannelsSignal(name) {
+  let sig = profileChannelSignals.get(name);
+  if (!sig) {
+    sig = createSignal(getProfileChannels(name));
+    profileChannelSignals.set(name, sig);
+  }
+  return sig;
+}
+// reactive accessor for a profile's channels (used inside a profile popout)
+export function profileChannels(name) {
+  return profileChannelsSignal(name)[0]();
+}
+// re-sync a profile's reactive signal from storage (after a mutation)
+function syncProfileChannels(name) {
+  const sig = profileChannelSignals.get(name);
+  if (sig) sig[1](getProfileChannels(name));
+}
+
+export function addToProfile(name, id) {
+  if (!addChannelToProfile(name, id)) return false;
+  syncProfileChannels(name);
+  return true;
+}
+export function removeFromProfile(name, id) {
+  if (!removeChannelFromProfile(name, id)) return false;
+  syncProfileChannels(name);
+  return true;
+}
+
+export function addProfile(name) {
+  if (!createProfile(name)) return false;
+  setProfiles(listProfiles());
+  return true;
+}
+export function renameAnyProfile(oldName, newName) {
+  if (!renameProfile(oldName, newName)) return false;
+  // carry the reactive signal over to the new name so an open window keeps working
+  const sig = profileChannelSignals.get(oldName);
+  if (sig) {
+    profileChannelSignals.delete(oldName);
+    profileChannelSignals.set(newName, sig);
+  }
+  setProfiles(listProfiles());
+  return true;
+}
+export function removeProfile(name) {
+  if (!deleteProfile(name)) return false;
+  profileChannelSignals.delete(name);
+  setProfiles(listProfiles());
+  return true;
+}
+
 // panes register a scroll-restore fn here; called after a reorder, since
 // moving a scrollable node in the DOM resets its scrollTop.
 const paneScrollRestores = new Set();
 
-// move the channel `id` to index `toIndex` (used by drag-to-reorder)
+// move the channel `id` to index `toIndex` in the SHARED FEED (drag-to-reorder;
+// profiles aren't reorderable). Transient, so no persistence.
 function moveChannel(id, toIndex) {
   const cur = channels();
   const from = cur.indexOf(id);
@@ -791,7 +1084,7 @@ function moveChannel(id, toIndex) {
   const next = cur.slice();
   next.splice(from, 1);
   next.splice(toIndex, 0, id);
-  persistChannels(next);
+  setChannels(next);
   // after the reorder settles, restore each pane's scroll position
   requestAnimationFrame(() => paneScrollRestores.forEach((h) => h.restore()));
 }
@@ -902,22 +1195,31 @@ function setupPaneDrag(container, win) {
   });
 }
 
-// the content rendered inside the popped-out OS window
+// the content rendered inside the popped-out OS window. Three modes:
+//  - Individual: props.individual = channelId -> one fixed pane, no close.
+//  - Profile:    props.profile   = name      -> that profile's persistent
+//                list; the pane × removes the channel from the saved profile.
+//  - Shared:     neither          -> the transient in-memory shared list;
+//                drag-to-reorder, × removes from the shared list.
 function PopoutContent(props) {
   let panesRef;
-  // Individual Feed: a fixed single channel (props.individual = channelId).
-  // Shared Feed: reads the live shared channels() store and supports
-  // add/remove + drag-to-reorder.
   const individual = props.individual;
-  // only the Shared Feed gets drag-to-reorder (individual has one fixed pane)
+  const profile = props.profile;
+  // channel list + how × behaves depend on the mode
+  const list = () => (profile ? profileChannels(profile) : channels());
+  const onClose = profile
+    ? (id) => removeFromProfile(profile, id)
+    : removeChannel;
+  // only the Shared Feed gets drag-to-reorder (individual = one pane, profiles
+  // are managed via the Discord menu, not reordered here)
   onMount(() => {
-    if (!individual && panesRef) setupPaneDrag(panesRef, props.win);
+    if (!individual && !profile && panesRef) setupPaneDrag(panesRef, props.win);
   });
   return (
     <>
       <Show when={!store.hideTitle}>
         <div class="mc-popout-bar">
-          <span class="mc-popout-title">discordfeed</span>
+          <span class="mc-popout-title">{profile ? profile : "discordfeed"}</span>
         </div>
       </Show>
       {/* delegated click handler catches all data-mc-url / data-mc-channel
@@ -930,19 +1232,20 @@ function PopoutContent(props) {
         on:click={handleDelegatedClick}
       >
         <Show
-          when={individual ? true : channels().length}
+          when={individual ? true : list().length}
           fallback={
             <div class="mc-empty">
-              Right-click a channel in Discord → “Add to Shared Feed” to start
-              monitoring it here.
+              {profile
+                ? "This profile has no channels. Right-click a channel in Discord → “Add to Profile” to add one."
+                : "Right-click a channel in Discord → “Add to Shared Feed” to start monitoring it here."}
             </div>
           }
         >
           <Show
             when={individual}
             fallback={
-              <For each={channels()}>
-                {(id) => <Pane id={id} onClose={removeChannel} />}
+              <For each={list()}>
+                {(id) => <Pane id={id} onClose={onClose} />}
               </For>
             }
           >
@@ -960,54 +1263,60 @@ function PopoutContent(props) {
 // ---------------------------------------------------------------------------
 // popout window management (module level; opened from the toolbar button)
 // ---------------------------------------------------------------------------
-let popupWin = null;
-let popupDispose = null;
-// Individual Feed windows (one per channel pop-out; duplicates allowed). We
-// track them so onUnload can dispose + close them all. Each entry: {win,dispose}.
-const individualPopups = new Set();
+// Every open feed window we've spawned (shared, individual, or profile), so
+// onUnload can dispose the Solid tree + close them. Each entry: {win, dispose}.
+const openPopups = new Set();
 
-// dispose the Solid tree and best-effort close the window (used on unload).
+// dispose the Solid tree and best-effort close every window (used on unload).
 export function closePopup() {
-  try {
-    popupDispose?.();
-  } catch {}
-  popupDispose = null;
-  try {
-    popupWin?.close();
-  } catch {}
-  try {
-    popupWin?.eval?.("window.close()");
-  } catch {}
-  popupWin = null;
-  // also tear down every Individual Feed window
-  individualPopups.forEach(({ win, dispose }) => {
+  openPopups.forEach(({ win, dispose }) => {
     try { dispose?.(); } catch {}
     try { win?.close(); } catch {}
     try { win?.eval?.("window.close()"); } catch {}
   });
-  individualPopups.clear();
+  openPopups.clear();
+}
+
+// public entry points:
+//   openPopout()          -> Shared Feed (transient multi-pane list)
+//   openPopout(channelId) -> Individual Feed (one fixed channel)
+//   openProfilePopout(nm) -> a feed window bound to persistent profile `nm`
+// Multiple windows may be open at once (Dorion gives us no way to reuse a
+// named window, so each call spawns a fresh one).
+export function openPopout(channelId) {
+  createFeedWindow({ individual: channelId || null, profile: null });
+}
+export function openProfilePopout(name) {
+  createFeedWindow({ individual: null, profile: name });
 }
 
 // NOTE: Dorion's webview gives us no reliable control over popup windows --
 // we cannot detect when one is closed, reuse a named window, or close one from
-// script. So the button simply opens a popout each time; duplicates are
-// expected and accepted (close extras via their OS window controls).
-//
-// Called with no argument -> the Shared Feed (multi-pane, live shared store).
-// Called with a channelId -> an Individual Feed: a standalone window showing
-// only that one channel (duplicates allowed; each click opens a new window).
-export function openPopout(channelId) {
-  const individual = !!channelId;
-  // Individual Feeds open narrower (single column); Shared Feed stays wide.
-  const dims = individual ? "width=500,height=640" : "width=1000,height=640";
+// script. Duplicates are expected and accepted (close extras via their OS
+// window controls).
+function createFeedWindow({ individual, profile }) {
+  // Individual Feeds open narrower (single column); shared/profile stay wide.
+  const w = individual ? 500 : 1000;
+  const h = 640;
+  const left = Math.round(window.screenX + (window.outerWidth - w) / 2);
+  const top = Math.round(window.screenY + (window.outerHeight - h) / 2);
+  const dims = `width=${w},height=${h},left=${left},top=${top}`;
   const popup = window.open("about:blank", "_blank", dims);
   if (!popup) {
     alert("Pop-out was blocked. Allow popups for Discord/Dorion and retry.");
     return;
   }
-  if (!individual) popupWin = popup;
+
+  try {
+    popup.moveTo(left, top);
+    popup.resizeTo(w, h);
+  } catch {}
   const doc = popup.document;
-  const winTitle = individual ? channelName(channelId) : "DiscordFeed";
+  const winTitle = individual
+    ? channelName(individual)
+    : profile
+      ? profile
+      : "DiscordFeed";
 
   doc.open();
   doc.write(
@@ -1065,12 +1374,10 @@ export function openPopout(channelId) {
   // so live updates still flow into these panes.
   const mount = doc.createElement("div");
   mount.className = "mc-popout-root";
-  // follow Discord's chat-font-scaling setting (Settings -> Appearance). The
-  // store exposes the effective px (12..24, default 16); we scale relative to
-  // 16 so the default is exactly 1 and the CSS calc()s track the slider.
-  // mirror Discord's Appearance settings exactly (read at open; reopen to apply
-  // changes). fontSize: effective px 12..24 (default 16) -> scale factor.
-  // messageGroupSpacing: gap between groups in px (default 16).
+  // mirror Discord's Appearance settings exactly (read at open; reopen to
+  // apply changes). fontSize: effective px 12..24 (default 16), scaled
+  // relative to 16 so the default is exactly 1 and the CSS calc()s track the
+  // slider. messageGroupSpacing: gap between groups in px (default 16).
   try {
     const fs = AccessibilityStore?.fontSize;
     if (fs) mount.style.setProperty("--mc-font-scale", String(fs / 16));
@@ -1081,16 +1388,12 @@ export function openPopout(channelId) {
   const dispose = render(
     () => (
       <ReactiveRoot>
-        <PopoutContent win={popup} individual={channelId} />
+        <PopoutContent win={popup} individual={individual} profile={profile} />
       </ReactiveRoot>
     ),
     mount
   );
-  if (individual) {
-    individualPopups.add({ win: popup, dispose });
-  } else {
-    popupDispose = dispose;
-  }
+  openPopups.add({ win: popup, dispose });
   // Blur Discord's message input before handing focus to the popup. Otherwise,
   // when focus returns to the main window on close, Discord's Slate editor
   // re-focuses and resurfaces text left in its undo buffer (looks like a stray
@@ -1118,7 +1421,10 @@ function register(channelId, handlers) {
   let set = listeners.get(channelId);
   if (!set) listeners.set(channelId, (set = new Set()));
   set.add(handlers);
-  return () => set.delete(handlers);
+  return () => {
+    set.delete(handlers);
+    if (!set.size) listeners.delete(channelId); // don't keep empty sets around
+  };
 }
 
 export function fanout(channelId, kind, message) {

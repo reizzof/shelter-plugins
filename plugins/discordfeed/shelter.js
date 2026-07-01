@@ -5,7 +5,7 @@
 export const {
   flux: { storesFlat },
   plugin: { store, scoped },
-  ui: { ReactiveRoot, injectCss, SwitchItem },
+  ui: { ReactiveRoot, injectCss, SwitchItem, TextBox, Button, ButtonSizes, Header, HeaderTags },
   solidWeb: { render },
   util: { log, getFiber },
   observeDom,
